@@ -12,6 +12,39 @@ u-blox ZED-F9P をローバーとして動作させる Python クライアント
 - RTCM ソース指定がなければローカル受信のみで動作
 - 切断時の自動再接続
 
+## システム構成
+
+```mermaid
+flowchart LR
+    subgraph SRC["RTCM ソース（いずれか一方）"]
+        NTRIP["NTRIP キャスター<br/>(HTTP/TCP)"]
+        BASE["基準局 F9P<br/>(USB シリアル)"]
+    end
+
+    subgraph APP["f9p_rtk_rover.py"]
+        NW["ntrip_worker<br/>スレッド"]
+        BW["base_serial_worker<br/>スレッド"]
+        MAIN["main ループ<br/>UBXReader"]
+        WS["WebServer<br/>Flask + SSE<br/>スレッド"]
+    end
+
+    ROVER["ローバー F9P<br/>(USB シリアル)"]
+    BROWSER["ブラウザ<br/>Leaflet + EventSource"]
+
+    NTRIP -- "RTCM3" --> NW
+    BASE  -- "RTCM3" --> BW
+    NW    -- "write" --> ROVER
+    BW    -- "write" --> ROVER
+    ROVER -- "NMEA / UBX" --> MAIN
+    MAIN  -- "GGA（VRS用）" --> NW
+    MAIN  -- "publish(state)" --> WS
+    WS    -- "SSE / HTTP" --> BROWSER
+```
+
+- RTCMソースは NTRIP か 基準局シリアルのいずれか一方（同時指定はエラー）。
+- ローバーから受信した NMEA(GGA) は、NTRIP 利用時のみキャスターへ送り返される（VRS対応）。
+- `--web` 指定時のみ WebServer スレッドが起動し、ブラウザに測位状態を SSE で配信する。
+
 ## 動作環境
 
 - Python 3.8 以上
