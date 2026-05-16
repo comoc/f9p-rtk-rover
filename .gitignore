@@ -40,3 +40,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Web UI third-party assets (auto-downloaded by web_server.py)
+static/vendor/

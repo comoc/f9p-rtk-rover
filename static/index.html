@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>F9P RTK Rover</title>
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="layout">
+    <div id="map"></div>
+    <aside id="panel">
+      <h1>F9P RTK Rover</h1>
+
+      <div id="status-badge" class="badge badge-none">NO DATA</div>
+
+      <dl id="metrics">
+        <dt>Latitude</dt><dd id="m-lat">&mdash;</dd>
+        <dt>Longitude</dt><dd id="m-lon">&mdash;</dd>
+        <dt>Altitude</dt><dd id="m-alt">&mdash;</dd>
+        <dt>Satellites</dt><dd id="m-sats">&mdash;</dd>
+        <dt>HDOP</dt><dd id="m-hdop">&mdash;</dd>
+        <dt>RTCM bytes</dt><dd id="m-rtcm">&mdash;</dd>
+        <dt>RTCM age</dt><dd id="m-rtcm-age">&mdash;</dd>
+        <dt>Updated</dt><dd id="m-ts">&mdash;</dd>
+      </dl>
+
+      <div id="conn">
+        <span id="conn-dot" class="dot-disconnected"></span>
+        <span id="conn-label">disconnected</span>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

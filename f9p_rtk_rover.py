@@ -1,4 +1,4 @@
-# f9p_ntrip_client.py
+# f9p_rtk_rover.py
 
 import argparse
 import base64
@@ -63,6 +63,49 @@ def read_ntrip_response(sock: socket.socket) -> bytes:
         data += chunk
 
     return data
+
+
+def base_serial_worker(args, ser: serial.Serial, shared: dict, stop_event: threading.Event):
+    total_rtcm_bytes = 0
+
+    while not stop_event.is_set():
+        base_ser = None
+
+        try:
+            print(f"[BASE] opening {args.base_serial} @ {args.base_baud}...")
+
+            base_ser = serial.Serial(args.base_serial, args.base_baud, timeout=1)
+            print("[BASE] connected")
+
+            last_log = time.time()
+
+            while not stop_event.is_set():
+                data = base_ser.read(4096)
+
+                if not data:
+                    continue
+
+                written = ser.write(data)
+                total_rtcm_bytes += written
+
+                shared["rtcm_bytes"] = total_rtcm_bytes
+                shared["last_rtcm_time"] = time.time()
+
+                if args.verbose or time.time() - last_log >= 5:
+                    print(f"[BASE] forwarded {written} bytes, total={total_rtcm_bytes}")
+                    last_log = time.time()
+
+        except Exception as e:
+            print(f"[BASE] error: {e}")
+
+            time.sleep(args.reconnect_interval)
+
+        finally:
+            if base_ser:
+                try:
+                    base_ser.close()
+                except Exception:
+                    pass
 
 
 def ntrip_worker(args, ser: serial.Serial, shared: dict, stop_event: threading.Event):
@@ -155,16 +198,21 @@ def ntrip_worker(args, ser: serial.Serial, shared: dict, stop_event: threading.E
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ZED-F9P NMEA reader with optional NTRIP client"
+        description="ZED-F9P RTK rover client (RTCM source: NTRIP or base serial)"
     )
 
-    parser.add_argument("--serial", required=True, help="例: COM9, /dev/ttyACM0")
+    parser.add_argument("--serial", required=True, help="ローバーF9Pのポート 例: COM9, /dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=115200)
 
-    # NTRIPは optional
+    # RTCM ソース1: NTRIPキャスター (optional)
     parser.add_argument("--host", default=None, help="NTRIP caster host")
     parser.add_argument("--port", type=int, default=2101)
     parser.add_argument("--mountpoint", default=None)
+
+    # RTCM ソース2: 基準局F9Pのシリアル (optional, NTRIPと排他)
+    parser.add_argument("--base-serial", default=None,
+                        help="基準局F9Pのポート 例: COM10, /dev/ttyACM1")
+    parser.add_argument("--base-baud", type=int, default=115200)
 
     parser.add_argument("--user", default=None)
     parser.add_argument("--password", default=None)
@@ -173,9 +221,22 @@ def main():
     parser.add_argument("--reconnect-interval", type=float, default=5.0)
     parser.add_argument("--verbose", action="store_true")
 
+    parser.add_argument("--web", action="store_true",
+                        help="ブラウザでの結果表示用Webサーバーを起動する")
+    parser.add_argument("--web-host", default="127.0.0.1",
+                        help="Webサーバーのバインドアドレス (既定: 127.0.0.1)")
+    parser.add_argument("--web-port", type=int, default=8000,
+                        help="Webサーバーのポート (既定: 8000)")
+
     args = parser.parse_args()
 
     use_ntrip = bool(args.host and args.mountpoint)
+    use_base_serial = bool(args.base_serial)
+
+    if use_ntrip and use_base_serial:
+        parser.error("--host/--mountpoint と --base-serial は同時に指定できません")
+
+    use_rtcm_source = use_ntrip or use_base_serial
 
     shared = {
         "latest_gga": None,
@@ -184,6 +245,12 @@ def main():
     }
 
     stop_event = threading.Event()
+
+    web = None
+    if args.web:
+        from web_server import WebServer  # 遅延 import: --web 未使用時は flask 不要
+        web = WebServer(host=args.web_host, port=args.web_port)
+        web.start()
 
     ser = serial.Serial(args.serial, args.baud, timeout=1)
 
@@ -194,8 +261,15 @@ def main():
             daemon=True,
         )
         t.start()
+    elif use_base_serial:
+        t = threading.Thread(
+            target=base_serial_worker,
+            args=(args, ser, shared, stop_event),
+            daemon=True,
+        )
+        t.start()
     else:
-        print("[NTRIP] disabled: --host and --mountpoint were not specified")
+        print("[RTCM] disabled: NTRIP も基準局シリアルも指定されていません")
 
     ubr = UBXReader(
         ser,
@@ -223,17 +297,19 @@ def main():
 
                 status = gga_quality_to_status(quality)
 
-                if use_ntrip:
-                    rtcm_bytes = shared.get("rtcm_bytes", 0)
-                    last_rtcm_time = shared.get("last_rtcm_time")
+                rtcm_bytes = shared.get("rtcm_bytes", 0)
+                last_rtcm_time = shared.get("last_rtcm_time")
+                rtcm_age = (
+                    time.time() - last_rtcm_time if last_rtcm_time else None
+                )
 
-                    if last_rtcm_time:
-                        rtcm_age = time.time() - last_rtcm_time
+                if use_rtcm_source:
+                    if rtcm_age is not None:
                         rtcm_info = f"RTCM={rtcm_bytes} bytes, age={rtcm_age:.1f}s"
                     else:
                         rtcm_info = "RTCM=none"
                 else:
-                    rtcm_info = "NTRIP=off"
+                    rtcm_info = "RTCM=off"
 
                 print(
                     f"{status} | "
@@ -241,6 +317,19 @@ def main():
                     f"alt={alt}m, sats={num_sv}, hdop={hdop}, "
                     f"{rtcm_info}"
                 )
+
+                if web is not None:
+                    web.publish({
+                        "status": status,
+                        "lat": float(lat) if lat is not None else None,
+                        "lon": float(lon) if lon is not None else None,
+                        "alt": float(alt) if alt is not None else None,
+                        "sats": int(num_sv) if num_sv is not None else None,
+                        "hdop": float(hdop) if hdop is not None else None,
+                        "rtcm_bytes": rtcm_bytes if use_rtcm_source else None,
+                        "rtcm_age": rtcm_age if use_rtcm_source else None,
+                        "ts": time.time(),
+                    })
 
             elif msg.identity == "NAV-PVT":
                 if not args.verbose:
