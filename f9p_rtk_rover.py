@@ -228,6 +228,17 @@ def main():
     parser.add_argument("--web-port", type=int, default=8000,
                         help="Webサーバーのポート (既定: 8000)")
 
+    parser.add_argument("--nmea-udp", action="append", default=None,
+                        metavar="HOST:PORT",
+                        help="NMEAをUDPで転送する先 (複数指定可、ブロードキャスト可)")
+    parser.add_argument("--nmea-tcp-port", type=int, default=None,
+                        help="NMEA配信用TCPサーバーの待受ポート (例: 10110)")
+    parser.add_argument("--nmea-tcp-host", default="0.0.0.0",
+                        help="NMEA配信用TCPサーバーのバインドアドレス")
+    parser.add_argument("--nmea-sentences", default=None,
+                        metavar="GGA,RMC,...",
+                        help="転送するNMEAセンテンスをカンマ区切りで指定 (既定: 全NMEA)")
+
     args = parser.parse_args()
 
     use_ntrip = bool(args.host and args.mountpoint)
@@ -251,6 +262,26 @@ def main():
         from web_server import WebServer  # 遅延 import: --web 未使用時は flask 不要
         web = WebServer(host=args.web_host, port=args.web_port)
         web.start()
+
+    nmea_forwarder = None
+    udp_targets = []
+    if args.nmea_udp:
+        from nmea_forwarder import parse_host_port
+        udp_targets = [parse_host_port(s) for s in args.nmea_udp]
+
+    if udp_targets or args.nmea_tcp_port is not None:
+        from nmea_forwarder import NmeaForwarder
+        sentences = (
+            args.nmea_sentences.split(",") if args.nmea_sentences else None
+        )
+        nmea_forwarder = NmeaForwarder(
+            udp_targets=udp_targets,
+            tcp_host=args.nmea_tcp_host,
+            tcp_port=args.nmea_tcp_port,
+            sentences=sentences,
+        )
+        for host, port in udp_targets:
+            print(f"[NMEA] UDP target: {host}:{port}")
 
     ser = serial.Serial(args.serial, args.baud, timeout=1)
 
@@ -284,6 +315,9 @@ def main():
 
             if msg is None:
                 continue
+
+            if nmea_forwarder is not None and raw and raw.startswith(b"$"):
+                nmea_forwarder.forward(raw)
 
             if msg.identity in ("GNGGA", "GPGGA", "GAGGA", "GLGGA"):
                 shared["latest_gga"] = raw.strip()
@@ -366,6 +400,8 @@ def main():
 
     finally:
         stop_event.set()
+        if nmea_forwarder is not None:
+            nmea_forwarder.close()
         ser.close()
 
 

@@ -30,6 +30,15 @@ flowchart LR
 
     ROVER["ローバー F9P<br/>(USB シリアル)"]
     BROWSER["ブラウザ<br/>Leaflet + EventSource"]
+    EXT["外部GIS/GNSSアプリ<br/>QGIS / Mission Planner / OpenCPN 等"]
+
+    subgraph APP
+        NW
+        BW
+        MAIN
+        WS
+        FWD["NmeaForwarder<br/>UDP送信 + TCPサーバー"]
+    end
 
     NTRIP -- "RTCM3" --> NW
     BASE  -- "RTCM3" --> BW
@@ -38,12 +47,15 @@ flowchart LR
     ROVER -- "NMEA / UBX" --> MAIN
     MAIN  -- "GGA（VRS用）" --> NW
     MAIN  -- "publish(state)" --> WS
+    MAIN  -- "forward(NMEA)" --> FWD
     WS    -- "SSE / HTTP" --> BROWSER
+    FWD   -- "NMEA over UDP / TCP" --> EXT
 ```
 
 - RTCMソースは NTRIP か 基準局シリアルのいずれか一方（同時指定はエラー）。
 - ローバーから受信した NMEA(GGA) は、NTRIP 利用時のみキャスターへ送り返される（VRS対応）。
 - `--web` 指定時のみ WebServer スレッドが起動し、ブラウザに測位状態を SSE で配信する。
+- `--nmea-udp` / `--nmea-tcp-port` 指定時のみ NmeaForwarder が起動し、ローバーの NMEA を外部GIS/GNSSアプリへ転送する。
 
 ## 動作環境
 
@@ -121,6 +133,43 @@ python f9p_rtk_rover.py ^
 | `GET /api/state` | 現在の測位スナップショット + 軌跡 (JSON) |
 | `GET /api/stream` | Server-Sent Events での測位データ配信 |
 
+### 5. 外部GIS/GNSSアプリへ NMEA を転送
+
+ローバーから受信した NMEA を UDP / TCP で外部アプリに転送する。プロトコルは **NMEA 0183**（GIS/GNSS界の事実上の標準）なので、QGIS / Mission Planner / u-center / OpenCPN などが追加コードなしで受信できる。
+
+#### UDP転送（複数同時可、ブロードキャスト可）
+
+```bash
+python f9p_rtk_rover.py ^
+  --serial COM8 ^
+  --baud 230400 ^
+  --base-serial COM9 ^
+  --base-baud 230400 ^
+  --nmea-udp 127.0.0.1:10110 ^
+  --nmea-udp 192.168.1.255:10110
+```
+
+#### TCPサーバとして配信（受信側がクライアントとして接続）
+
+```bash
+python f9p_rtk_rover.py ^
+  --serial COM8 ^
+  --baud 230400 ^
+  --base-serial COM9 ^
+  --base-baud 230400 ^
+  --nmea-tcp-port 10110
+```
+
+#### 送信するセンテンスをフィルタする場合
+
+```bash
+python f9p_rtk_rover.py --serial COM8 --baud 230400 ^
+  --nmea-udp 127.0.0.1:10110 ^
+  --nmea-sentences GGA,RMC,VTG
+```
+
+`10110` は NMEA 用に広く使われるポート番号。受信側アプリで「NMEA over UDP/TCP」入力として上記ホスト・ポートを指定する。
+
 ## オプション
 
 | オプション | 既定値 | 説明 |
@@ -140,6 +189,10 @@ python f9p_rtk_rover.py ^
 | `--web` | `False` | Web UI サーバーを起動する |
 | `--web-host` | `127.0.0.1` | Web サーバーのバインドアドレス |
 | `--web-port` | `8000` | Web サーバーのポート |
+| `--nmea-udp` | `None` | NMEA UDP転送先 `HOST:PORT`（複数指定可、ブロードキャスト可） |
+| `--nmea-tcp-port` | `None` | NMEA配信用TCPサーバーの待受ポート |
+| `--nmea-tcp-host` | `0.0.0.0` | NMEA配信用TCPサーバーのバインドアドレス |
+| `--nmea-sentences` | `None` | 転送するNMEAセンテンスをカンマ区切り指定（例: `GGA,RMC`） |
 
 ## 出力例
 
